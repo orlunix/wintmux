@@ -79,6 +79,9 @@ func Parse(args []string) (*Command, error) {
 		case "--daemon":
 			cmd.DaemonMode = true
 			i++
+		case "-u":
+			// tmux -u enables UTF-8 mode; wintmux is always UTF-8 -- silently ignore.
+			i++
 		default:
 			goto parseCommand
 		}

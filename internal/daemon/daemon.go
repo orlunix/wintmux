@@ -15,8 +15,8 @@ import (
 
 	"wintmux/internal/ipc"
 	"wintmux/internal/pty"
+	"wintmux/internal/screen"
 	"wintmux/internal/scrollback"
-	"wintmux/internal/vt"
 )
 
 // ControlInfo is written to the socket path file so CLI clients can
@@ -33,6 +33,7 @@ type Daemon struct {
 	sessionName  string
 	terminal     pty.Terminal
 	buffer       *scrollback.Buffer
+	screen       *screen.Screen
 	listener     net.Listener
 	pipePaneMu   sync.Mutex
 	pipePaneFile *os.File
@@ -43,7 +44,6 @@ type Daemon struct {
 // terminal, starts the IPC server, and blocks until the child exits
 // and the grace period elapses.
 func Run(socketPath, sessionName, workdir, command string, cols, rows int) error {
-	freeConsole()
 	term, err := pty.New(cols, rows, command, workdir, nil)
 	if err != nil {
 		return fmt.Errorf("create terminal: %w", err)
@@ -54,6 +54,7 @@ func Run(socketPath, sessionName, workdir, command string, cols, rows int) error
 		sessionName: sessionName,
 		terminal:    term,
 		buffer:      scrollback.New(2000),
+		screen:      screen.New(cols, rows),
 		done:        make(chan struct{}),
 	}
 
@@ -90,7 +91,7 @@ func Run(socketPath, sessionName, workdir, command string, cols, rows int) error
 }
 
 // readOutput continuously reads from the terminal and feeds data into
-// the scrollback buffer (and optional pipe-pane file).
+// the scrollback buffer, the virtual screen, and optional pipe-pane file.
 func (d *Daemon) readOutput() {
 	buf := make([]byte, 4096)
 	for {
@@ -98,6 +99,7 @@ func (d *Daemon) readOutput() {
 		if n > 0 {
 			data := buf[:n]
 			d.buffer.Write(data)
+			d.screen.Write(data)
 
 			d.pipePaneMu.Lock()
 			if d.pipePaneFile != nil {
@@ -225,11 +227,8 @@ func (d *Daemon) handleCapture(req ipc.Request) ipc.Response {
 	if lines <= 0 {
 		lines = 50
 	}
-	captured := d.buffer.LastWithPartial(lines)
-	// Strip VT escape sequences from each line for clean text output.
-	for i, line := range captured {
-		captured[i] = vt.Strip(line)
-	}
+	// Use virtual screen for capture — handles full-screen TUI apps correctly.
+	captured := d.screen.Capture(lines)
 	output := strings.Join(captured, "\n")
 	return ipc.Response{OK: true, Output: output}
 }

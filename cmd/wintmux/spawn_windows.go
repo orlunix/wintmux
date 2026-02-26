@@ -11,21 +11,15 @@ import (
 )
 
 // spawnDaemon launches the wintmux daemon as a background process.
-// Uses raw CreateProcessW instead of exec.Command to avoid Go runtime
-// setting up inherited pipes that can interfere with ConPTY.
+// Uses CREATE_BREAKAWAY_FROM_JOB so the daemon survives when the
+// parent SSH session ends (OpenSSH uses Job Objects to kill children).
 func spawnDaemon(socketPath, sessionName, workdir, command string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 
-	parts := []string{
-		`"` + exe + `"`,
-		"--daemon",
-		"-S", socketPath,
-		"new-session", "-d",
-		"-s", sessionName,
-	}
+	parts := []string{exe, "--daemon", "-S", socketPath, "new-session", "-d", "-s", sessionName}
 	if workdir != "" {
 		parts = append(parts, "-c", workdir)
 	}
@@ -36,29 +30,29 @@ func spawnDaemon(socketPath, sessionName, workdir, command string) error {
 
 	cmdLinePtr, err := syscall.UTF16PtrFromString(cmdLine)
 	if err != nil {
-		return fmt.Errorf("UTF16PtrFromString: %w", err)
+		return fmt.Errorf("cmd line: %w", err)
 	}
 
 	var si syscall.StartupInfo
 	si.Cb = uint32(unsafe.Sizeof(si))
+
 	var pi syscall.ProcessInformation
-
-	// CREATE_NEW_PROCESS_GROUP (0x200) | CREATE_NO_WINDOW (0x08000000)
-	flags := uint32(0x00000200 | 0x08000000)
-
-	createErr := syscall.CreateProcess(
+	// CREATE_NO_WINDOW (0x08000000): don't create a console window
+	// CREATE_NEW_PROCESS_GROUP (0x00000200): separate Ctrl-C group
+	// CREATE_BREAKAWAY_FROM_JOB (0x01000000): escape SSH's Job Object
+	const flags = 0x08000000 | 0x00000200 | 0x01000000
+	err = syscall.CreateProcess(
 		nil,
 		cmdLinePtr,
 		nil, nil,
-		false, // bInheritHandles = FALSE
+		false, // don't inherit handles
 		flags,
 		nil, nil,
 		&si, &pi,
 	)
-	if createErr != nil {
-		return fmt.Errorf("CreateProcess: %w", createErr)
+	if err != nil {
+		return fmt.Errorf("create process: %w", err)
 	}
-
 	syscall.CloseHandle(pi.Thread)
 	syscall.CloseHandle(pi.Process)
 	return nil
